@@ -147,12 +147,11 @@ function attemptRemoveContent(message, args) {
           fs.unlink('./Content/' + message.guild + '/' + files[i].name, (err) => {
             if (err) throw err;
             message.reply("Removed audio file with name " + args[0] + ".");
-            return;
           });
+          return;
         }
       }
+      message.reply("Failed to remove the audio file. This is likely because no such file exists.");
     });
   });
-
-  message.reply("Failed to remove the audio file. This is likely because no such file exists.");
 }
