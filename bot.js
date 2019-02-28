@@ -105,32 +105,35 @@ function attemptAddContent(message, args) {
       if (err) throw err;
       fs.readdir('./Content/' + message.guild, (err, files) => {
         if (err) throw err;
-        if (files.includes(formattedName))
+        for (let i = 0; i < files.length; i++)
         {
-          message.reply("This audio name has already been taken! Please change the name or remove the existing audio file using ''!remove'.")
-          return;
+          if (files[i].split('.')[0] == formattedName)
+          {
+            message.reply("This audio name has already been taken! Please change the name or remove the existing audio file using ''!remove'.")
+            return;
+          }
+        }
+
+        //Get file from link
+        try
+        {
+          var request = http.get(message.attachments.array()[0].url, (response) => {
+            if (response.headers['content-type'].includes("audio"))
+            {
+              var audioFile = fs.createWriteStream("./Content/" + message.guild + "/" + formattedName + "." + message.attachments.array()[0].url.split('.').pop());
+              response.pipe(audioFile);
+              message.reply("Audio file added successfully! Type '!ouch " + formattedName + "' to play it!");
+            }
+            else message.reply("The media requested is not recognized as an audio file. Please change the audio filetype and try again.");
+          });
+        }
+        catch (err)
+        {
+          console.log(err);
+          message.reply("Failed to get media from supplied URL. Ensure that the supplied URL is a direct media URL (it will have the audio filename extension, like '.mp3', on the end).");
         }
       });
     });
-
-    //Get file from link
-    try
-    {
-      var request = http.get(message.attachments.array()[0].url, (response) => {
-        if (response.headers['content-type'].includes("audio"))
-        {
-          var audioFile = fs.createWriteStream("./Content/" + message.guild + "/" + formattedName + "." + message.attachments.array()[0].url.split('.').pop());
-          response.pipe(audioFile);
-          message.reply("Audio file added successfully! Type '!ouch " + formattedName + "' to play it!");
-        }
-        else message.reply("The media requested is not recognized as an audio file. Please change the audio filetype and try again.");
-      });
-    }
-    catch (err)
-    {
-      console.log(err);
-      message.reply("Failed to get media from supplied URL. Ensure that the supplied URL is a direct media URL (it will have the audio filename extension, like '.mp3', on the end).");
-    }
   }
   else message.reply("Please embed an audio file (send it to Discord and add this command as an attached message).");
 }
