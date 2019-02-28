@@ -1,5 +1,5 @@
 /Log
-/node-modules
+/node_modules
 /Content
 auth.json
-commands.json
+serverConfigs.json
