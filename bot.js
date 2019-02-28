@@ -22,6 +22,10 @@ var commands = [
   {
     keyword: "delete",
     action: attemptRemoveContent
+  },
+  {
+    keyword: "list",
+    action: listFiles
   }
 ];
 
@@ -36,6 +40,21 @@ function onMessage(message) {
       }
     }
   }
+}
+
+function listFiles(message, args) {
+  fs.mkdir('./Content/' + message.guild, { recursive: true }, (err) => {
+    if (err) throw err;
+    fs.readdir('./Content/' + message.guild, (err, files) => {
+      var printString = "";
+      for (let i = 0; i < files.length - 1; i++) {
+        printString += files[i].split('.')[0] += ", ";
+      }
+      printString += files[files.length - 1].split('.')[0];
+
+      message.reply("Available audio files: " + printString);
+    });
+  });
 }
 
 function playAudio(message, args)
