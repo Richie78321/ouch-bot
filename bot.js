@@ -3,6 +3,9 @@ var auth = require('./auth.json');
 var fs = require('fs');
 var http = require('https');
 
+var playQueue = {};
+var activeDispatcher = {};
+
 const client = new Discord.Client();
 client.on('ready', function() {
   console.log("Bot connected.")
@@ -26,6 +29,10 @@ var commands = [
   {
     keyword: "list",
     action: listFiles
+  },
+  {
+    keyword: "oof",
+    action: stopCurrent
   }
 ];
 
@@ -39,6 +46,21 @@ function onMessage(message) {
         break;
       }
     }
+  }
+}
+
+function stopCurrent(message, args)
+{
+  if (args[0] && args[0].toLowerCase() == "all")
+  {
+    playQueue[message.guild] = [];
+    message.reply("Cleared the queue for " + message.guild + ".");
+  }
+
+  if (activeDispatcher[message.guild] && activeDispatcher[message.guild] != null)
+  {
+    activeDispatcher[message.guild].end();
+    message.reply("Ended the current audio playback.");
   }
 }
 
@@ -67,12 +89,28 @@ function playAudio(message, args)
       {
         if (files[i].name.split(".")[0] == args[0])
         {
-          speakSound(message, './Content/' + message.guild + "/" + files[i].name);
+          queueSound(message, './Content/' + message.guild + "/" + files[i].name);
           return;
         }
       }
     });
   });
+}
+
+function queueSound(message, audioPath)
+{
+  //Add to queue
+  if (playQueue[message.guild])
+  {
+    playQueue[message.guild].push({path: audioPath, message: message});
+  }
+  else playQueue[message.guild] = [{path: audioPath, message: message}];
+
+  if (playQueue[message.guild].length == 1)
+  {
+    //Play now
+    speakSound(message, audioPath);
+  }
 }
 
 function speakSound(message, audioPath) {
@@ -85,8 +123,20 @@ function speakSound(message, audioPath) {
       dispatcher.on('error', e => {
         console.log(e);
       });
+      activeDispatcher[message.guild] = dispatcher;
+
       dispatcher.on('end', () => {
-        setTimeout(() => { message.member.voiceChannel.leave(); }, 1000);
+        playQueue[message.guild].shift();
+        if (playQueue[message.guild].length > 0)
+        {
+          //Play next
+          speakSound(playQueue[message.guild][0].message, playQueue[message.guild][0].path);
+        }
+        else
+        {
+          setTimeout(() => { message.member.voiceChannel.leave(); }, 1000);
+        }
+        activeDispatcher[message.guild] = null;
       });
     }).catch(console.log);
   } else {
