@@ -1,223 +1,374 @@
 var Discord = require('discord.js');
 var auth = require('./auth.json');
 var fs = require('fs');
+var glob = require('glob');
+var path = require('path');
 var http = require('https');
 
-var playQueue = {};
-var activeDispatcher = {};
+const PLAY_DELAY = 250;
+const END_LEAVE_DELAY = 30000;
 
 const client = new Discord.Client();
-client.on('ready', function() {
-  console.log("Bot connected.")
+client.on('ready', () => { console.log("Bot connected"); });
+client.login(auth.token).catch((error) => {
+    console.log("Bot failed to connect.");
+    console.error(error);
 });
-client.login(auth.token);
 
 client.on('message', onMessage);
+
+var serverInstances = {};
+function ServerInstance(id)
+{
+    this.id = id;
+    this.playQueue = [];
+    this.isActive = false;
+    this.currentDispatcher = null;
+    this.disconnectTimers = 0;
+    this.filepath = './Content/' + id + "/";
+
+    this.queueSound = (message, audioPath) => {
+        this.playQueue.push({
+            audioPath,
+            message,
+            voiceChannel: message.member.voiceChannel
+        });
+
+        if (!this.isActive)
+        {
+            // Start audio playback
+            this.startPlayback();
+        }
+    };
+
+    this.startPlayback = () => {
+        this.isActive = true;
+        this.playNextAudio();
+    };
+
+    this.playNextAudio = () => {
+        if (this.playQueue.length < 1)
+        {
+            console.log("Attempted to play next with none left -- this is a rare occurence and shouldn't really happen.");
+            this.isActive = false;
+            return;
+        }
+        var request = this.playQueue.shift();
+        
+        request.voiceChannel.join()
+        .then((connection) => {
+            console.log(`Playing ${path.basename(request.audioPath)} in ${request.message.member.guild}`);
+
+            function checkForNext() {
+                if (this.playQueue.length > 0)
+                {
+                    // Play next audio clip in queue after timeout
+                    setTimeout(this.playNextAudio.bind(this), PLAY_DELAY);
+                }
+                else
+                {
+                    // Commence disconnect sequence
+                    this.disconnectTimers++;
+                    this.isActive = false;
+                    setTimeout(() => {
+                        // Disconnect if last disconnect timer
+                        this.disconnectTimers--;
+                        if (this.disconnectTimers <= 0)
+                        {
+                            this.currentDispatcher = null;
+                            connection.disconnect();
+                        }
+                    }, END_LEAVE_DELAY);
+                }
+            }
+
+            this.currentDispatcher = connection.playFile(request.audioPath);
+            this.currentDispatcher.on('error', (err) => {
+                console.error("Failed to play audio file: " + err);
+                message.reply("Failed to play audio file (this is a bot problem).");
+                checkForNext.call(this);
+            });
+
+            this.currentDispatcher.on('end', () => {
+                checkForNext.call(this);
+            });
+        })
+        .catch((err) => {
+            console.error("Failed to join voice channel: " + err);
+            message.reply("Unable to join your voice channel!");
+        });
+    };
+}
+
 var commands = [
-  {
-    keyword: "add",
-    action: attemptAddContent
-  },
-  {
-    keyword: "ouch",
-    action: playAudio
-  },
-  {
-    keyword: "delete",
-    action: attemptRemoveContent
-  },
-  {
-    keyword: "list",
-    action: listFiles
-  },
-  {
-    keyword: "oof",
-    action: stopCurrent
-  }
+    {
+        keyword: "add",
+        action: addContent
+    },
+    {
+        keyword: "remove",
+        action: removeContent
+    },
+    {
+        keyword: "ouch",
+        action: playAudio
+    },
+    {
+        keyword: "list",
+        action: listClips
+    },
+    {
+        keyword: "oof",
+        action: stopCurrent
+    }
 ];
 
-function onMessage(message) {
-  if (message.content.substring(0, 1) == "!") {
-    var args = message.content.substring(1).split(" ");
-    for (let i = 0; i < commands.length; i++) {
-      if (commands[i].keyword == args[0].toLowerCase()) {
-        //Command match
-        commands[i].action(message, args.slice(1));
-        break;
-      }
-    }
-  }
-}
-
-function stopCurrent(message, args)
+function stopCurrent(message, serverInstance, args)
 {
-  if (args[0] && args[0].toLowerCase() == "all")
-  {
-    playQueue[message.guild] = [];
-    message.reply("Cleared the queue for " + message.guild + ".");
-  }
-
-  if (activeDispatcher[message.guild] && activeDispatcher[message.guild] != null)
-  {
-    activeDispatcher[message.guild].end();
-    message.reply("Ended the current audio playback.");
-  }
-}
-
-function listFiles(message, args) {
-  fs.mkdir('./Content/' + message.guild, { recursive: true }, (err) => {
-    if (!err)
+    if (args.length > 0 && args[0].toLowerCase() == "all")
     {
-      fs.readdir('./Content/' + message.guild, (err, files) => {
-        var printString = "";
-        for (let i = 0; i < files.length - 1; i++) {
-          printString += files[i].split('.')[0] += ", ";
-        }
-        printString += files[files.length - 1].split('.')[0];
-
-        message.reply("Available audio files: " + printString);
-      });
+        serverInstance.playQueue = [];
+        if (serverInstance.currentDispatcher != null) serverInstance.currentDispatcher.end();
+        message.reply("Removed all the audio clips in the queue.");
     }
-  });
-}
-
-function playAudio(message, args)
-{
-  fs.mkdir('./Content/' + message.guild, { recursive: true }, (err) => {
-    if (!err)
+    else
     {
-      fs.readdir('./Content/' + message.guild, { withFileTypes: true }, (err, files) => {
-        if (!err)
+        if (serverInstance.currentDispatcher != null)
         {
-          for (let i = 0; i < files.length; i++)
-          {
-            if (files[i].name.split(".")[0] == args[0])
+            serverInstance.currentDispatcher.end();
+        }
+        message.reply("Skipped the current audio clip (Type `!oof all` to skip all).");
+    }
+}
+
+function listClips(message, serverInstance, args)
+{
+    new Promise((resolve, reject) => {
+        glob(serverInstance.filepath + "*.*", (err, files) => {
+            if (err)
             {
-              queueSound(message, './Content/' + message.guild + "/" + files[i].name);
-              return;
+                console.error("Glob failed: " + err);
+                message.reply("Unable to play the audio file (this is a bot problem).");
+                reject();
             }
-          }
+            resolve(files);
+        });
+    })
+    .then((files) => {
+        let list = "";
+        if (files && files.length > 0)
+        {
+            list = path.basename(files[0]).split(".")[0];
+            for (let i = 1; i < files.length; i++) list += ", " + path.basename(files[i]).split(".")[0];
         }
-      });
-    }
-  });
+
+        message.reply(list);
+    });
 }
 
-function queueSound(message, audioPath)
+function playAudio(message, serverInstance, args)
 {
-  //Add to queue
-  if (playQueue[message.guild])
-  {
-    playQueue[message.guild].push({path: audioPath, message: message});
-  }
-  else playQueue[message.guild] = [{path: audioPath, message: message}];
+    if (!message.member.voiceChannel)
+    {
+        message.reply("Join a channel first!");
+        return;
+    }
 
-  if (playQueue[message.guild].length == 1)
-  {
-    //Play now
-    speakSound(message, audioPath);
-  }
-}
+    if (args.length < 1 || args[0].length < 1)
+    {
+        message.reply("Please include the name of an audio clip to play! (Example: `!ouch example`)");
+        return;
+    }
 
-function speakSound(message, audioPath) {
-  if (message.member.voiceChannel) {
-    message.member.voiceChannel.join().then(connection => {
-      //Play audio when connected.
-      let split = audioPath.split("/");
-      console.log("Playing " + split[split.length - 1]  + " in " + message.member.guild + "...")
-      var dispatcher = connection.playFile(audioPath);
-      dispatcher.on('error', e => {
-        console.log(e);
-      });
-      activeDispatcher[message.guild] = dispatcher;
-
-      dispatcher.on('end', () => {
-        playQueue[message.guild].shift();
-        if (playQueue[message.guild].length > 0)
-        {
-          //Play next
-          speakSound(playQueue[message.guild][0].message, playQueue[message.guild][0].path);
-        }
-        else
-        {
-          setTimeout(() => { connection.disconnect(); }, 1000);
-        }
-        activeDispatcher[message.guild] = null;
-      });
-    }).catch(console.log);
-  } else {
-    message.reply("Join a channel, dingus.");
-  }
-}
-
-function attemptAddContent(message, args) {
-  if (message.attachments.array().length >= 1)
-  {
-    //Format name
     var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
 
-    //Ensure not repeat name
-    fs.mkdir('./Content/' + message.guild, { recursive: true }, (err) => {
-      if (!err)
-      {
-        fs.readdir('./Content/' + message.guild, (err, files) => {
-          if (!err)
-          {
+    new Promise((resolve, reject) => {
+        glob(serverInstance.filepath + "*.*", (err, files) => {
+            if (err)
+            {
+                console.error("Glob failed: " + err);
+                message.reply("Unable to play the audio file (this is a bot problem).");
+                reject();
+            }
+            resolve(files);
+        });
+    })
+    .then((files) => {
+        if (files)
+        {
             for (let i = 0; i < files.length; i++)
             {
-              if (files[i].split('.')[0] == formattedName)
-              {
-                message.reply("This audio name has already been taken! Please change the name or remove the existing audio file using ''!remove'.")
-                return;
-              }
-            }
-
-            //Get file from link
-            try
-            {
-              var request = http.get(message.attachments.array()[0].url, (response) => {
-                if (response.headers['content-type'].includes("audio"))
+                if (path.basename(files[i]).split('.')[0] == formattedName)
                 {
-                  var audioFile = fs.createWriteStream("./Content/" + message.guild + "/" + formattedName + "." + message.attachments.array()[0].url.split('.').pop());
-                  response.pipe(audioFile);
-                  message.reply("Audio file added successfully! Type '!ouch " + formattedName + "' to play it!");
+                    serverInstance.queueSound(message, files[i]);
+                    return;
                 }
-                else message.reply("The media requested is not recognized as an audio file. Please change the audio filetype and try again.");
-              });
             }
-            catch (err)
-            {
-              console.log(err);
-              message.reply("Failed to get media from supplied URL. Ensure that the supplied URL is a direct media URL (it will have the audio filename extension, like '.mp3', on the end).");
-            }
-          }
-        });
-      }
+        }
+
+        message.reply("Couldn't find an audio clip with the name '" + formattedName + "'!");
     });
-  }
-  else message.reply("Please embed an audio file (send it to Discord and add this command as an attached message).");
 }
 
-function attemptRemoveContent(message, args) {
-  fs.mkdir('./Content/' + message.guild, { recursive: true }, (err) => {
-    if (!err)
-    {
-      fs.readdir('./Content/' + message.guild, { withFileTypes: true }, (err, files) => {
-        if (!err)
+function onMessage(message) {
+    if (message.content.substring(0, 1) == "!") {
+        var args = message.content.substring(1).split(" ");
+        
+        // Check if server instance exists
+        if (serverInstances[message.guild.id] == null)
         {
-          for (let i = 0; i < files.length; i++)
-          {
-            if (files[i].name.split('.')[0] == args[0])
-            {
-              fs.unlink('./Content/' + message.guild + '/' + files[i].name, (err) => {
-                if (!err) message.reply("Removed audio file with name " + args[0] + ".");
-              });
-              return;
-            }
-          }
-          message.reply("Failed to remove the audio file. This is likely because no such file exists.");
+            // Create new instance
+            serverInstances[message.guild.id] = new ServerInstance(message.guild.id);
         }
-      });
+
+        // Find command
+        var commandInput = args[0].toLowerCase();
+        for (let i = 0; i < commands.length; i++) {
+            if (commands[i].keyword == commandInput) {
+                //Command match
+                commands[i].action(message, serverInstances[message.guild.id], args.slice(1));
+                break;
+            }
+        }
     }
-  });
+}
+
+function removeContent(message, serverInstance, args)
+{
+    if (args.length < 1 || args[0].length < 1)
+    {
+        message.reply("Please include the name of an audio clip to delete! (Example: `!remove example`)");
+        return;
+    }
+
+    var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
+
+    new Promise((resolve, reject) => {
+        glob(serverInstance.filepath + "*.*", (err, files) => {
+            if (err)
+            {
+                console.error("Glob failed: " + err);
+                message.reply("Unable to remove the audio file (this is a bot problem).");
+                reject();
+            }
+            resolve(files);
+        });
+    })
+    .then((files) => {
+        if (files)
+        {
+            for (let i = 0; i < files.length; i++)
+            {
+                if (path.basename(files[i]).split('.')[0] == formattedName)
+                {
+                    fs.unlink(files[i], (err) => {
+                        if (err)
+                        {
+                            console.error("Failed to delete audio file: " + err);
+                            message.reply("Unable to remove the audio file (this is a bot problem).");
+                        }
+                        message.reply("Successfully removed the audio clip '" + formattedName + "'.");
+                    });
+                    return;
+                }
+            }
+        }
+
+        message.reply("The audio clip specified does not exist!");
+    });
+}
+
+function youtube_parser(url){
+    var regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/;
+    var match = url.match(regExp);
+    return (match&&match[7].length==11)? match[7] : false;
+}
+
+function addContent(message, serverInstance, args)
+{
+    if (message.attachments.array().length < 1)
+    {
+        message.reply("Please upload an audio file and include the add command with the attachment!");
+        return;
+    }
+
+    if (args.length < 1)
+    {
+        message.reply("Please include a name for the audio file! (Example: !add test)");
+        return;
+    }
+
+    var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
+    if (formattedName.length < 1)
+    {
+        message.reply("Please include a name for the audio file! (Example: !add test)");
+        return;
+    }
+
+    new Promise((resolve, reject) => {
+        fs.mkdir(serverInstance.filepath, { recursive: true }, (err) => {
+            if (err)
+            {
+                console.error("Failed to create content directory: " + err);
+                message.reply("Unable to add the new audio file (this is a bot problem).");
+                reject();
+            }
+
+            resolve();
+        });
+    })
+    .then(() => {
+        return new Promise((resolve, reject) => {
+            glob(serverInstance.filepath + "*.*", (err, files) => {
+                if (err)
+                {
+                    console.error("Glob failed: " + err);
+                    message.reply("Unable to add the new audio file (this is a bot problem).");
+                    reject();
+                }
+                resolve(files);
+            });
+        });
+    })
+    .then((files) => {
+        if (files)
+        {
+            for (let i = 0; i < files.length; i++)
+            {
+                if (path.basename(files[i]).split('.')[0] == formattedName)
+                {
+                    message.reply("This audio name has already been taken! Please change the name or remove the existing audio file using `!remove`");
+                    reject();
+                }
+            }
+        }
+        
+        return downloadAttachmentContent(message, serverInstance, formattedName);
+    })
+    .then(() => {
+        message.reply("Audio file added successfully! Type `!ouch " + formattedName + "` to play it!");
+    });
+}
+
+function downloadAttachmentContent(message, serverInstance, formattedName)
+{
+    return new Promise((resolve, reject) => {
+        http.get(message.attachments.array()[0].url, (response) => {
+            if (response.statusCode !== 200)
+            {
+                console.error("Failed to make HTTP get request: " + err);
+                message.reply("Unable to add the new audio file (this is a bot problem).");
+                reject();
+            }
+            if (!response.headers['content-type'].includes('audio')) 
+            {
+                message.reply("The media requested is not recognized as an audio file. Please change the audio filetype and try again.");
+                reject();
+            }
+            
+            var audioFile = fs.createWriteStream(serverInstance.filepath + formattedName + "." + message.attachments.array()[0].url.split('.').pop());
+            response.pipe(audioFile);
+            resolve();
+        });
+    });
 }
