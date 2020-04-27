@@ -123,6 +123,16 @@ var commands = [
     }
 ];
 
+function getAudioFiles(serverInstance)
+{
+    return new Promise((resolve, reject) => {
+        glob(serverInstance.filepath + "*.*", (err, files) => {
+            if (err) reject(err);
+            resolve(files);
+        });
+    });
+}
+
 function stopCurrent(message, serverInstance, args)
 {
     if (args.length > 0 && args[0].toLowerCase() == "all")
@@ -143,17 +153,7 @@ function stopCurrent(message, serverInstance, args)
 
 function listClips(message, serverInstance, args)
 {
-    new Promise((resolve, reject) => {
-        glob(serverInstance.filepath + "*.*", (err, files) => {
-            if (err)
-            {
-                console.error("Glob failed: " + err);
-                message.reply("Unable to play the audio file (this is a bot problem).");
-                reject();
-            }
-            resolve(files);
-        });
-    })
+    getAudioFiles(serverInstance)
     .then((files) => {
         let list = "";
         if (files && files.length > 0)
@@ -163,6 +163,10 @@ function listClips(message, serverInstance, args)
         }
 
         message.reply(list);
+    })
+    .catch((err) => {
+        console.error("Glob failed: " + err);
+        message.reply("Unable to play the audio file (this is a bot problem).");
     });
 }
 
@@ -182,17 +186,7 @@ function playAudio(message, serverInstance, args)
 
     var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
 
-    new Promise((resolve, reject) => {
-        glob(serverInstance.filepath + "*.*", (err, files) => {
-            if (err)
-            {
-                console.error("Glob failed: " + err);
-                message.reply("Unable to play the audio file (this is a bot problem).");
-                reject();
-            }
-            resolve(files);
-        });
-    })
+    getAudioFiles(serverInstance)
     .then((files) => {
         if (files)
         {
@@ -207,6 +201,10 @@ function playAudio(message, serverInstance, args)
         }
 
         message.reply("Couldn't find an audio clip with the name '" + formattedName + "'!");
+    })
+    .catch((err) => {
+        console.error("Glob failed: " + err);
+        message.reply("Unable to play the audio file (this is a bot problem).");
     });
 }
 
@@ -243,17 +241,7 @@ function removeContent(message, serverInstance, args)
 
     var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
 
-    new Promise((resolve, reject) => {
-        glob(serverInstance.filepath + "*.*", (err, files) => {
-            if (err)
-            {
-                console.error("Glob failed: " + err);
-                message.reply("Unable to remove the audio file (this is a bot problem).");
-                reject();
-            }
-            resolve(files);
-        });
-    })
+    getAudioFiles(serverInstance)
     .then((files) => {
         if (files)
         {
@@ -275,13 +263,11 @@ function removeContent(message, serverInstance, args)
         }
 
         message.reply("The audio clip specified does not exist!");
+    })
+    .catch((err) => {
+        console.error("Glob failed: " + err);
+        message.reply("Unable to remove the audio file (this is a bot problem).");
     });
-}
-
-function youtube_parser(url){
-    var regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/;
-    var match = url.match(regExp);
-    return (match&&match[7].length==11)? match[7] : false;
 }
 
 function addContent(message, serverInstance, args)
@@ -317,19 +303,7 @@ function addContent(message, serverInstance, args)
             resolve();
         });
     })
-    .then(() => {
-        return new Promise((resolve, reject) => {
-            glob(serverInstance.filepath + "*.*", (err, files) => {
-                if (err)
-                {
-                    console.error("Glob failed: " + err);
-                    message.reply("Unable to add the new audio file (this is a bot problem).");
-                    reject();
-                }
-                resolve(files);
-            });
-        });
-    })
+    .then(getAudioFiles(serverInstance))
     .then((files) => {
         if (files)
         {
@@ -347,6 +321,10 @@ function addContent(message, serverInstance, args)
     })
     .then(() => {
         message.reply("Audio file added successfully! Type `!ouch " + formattedName + "` to play it!");
+    })
+    .catch((err) => {
+        console.error("Adding audio failed: " + err);
+        message.reply("Unable to add the new audio file (this is a bot problem).");
     });
 }
 
