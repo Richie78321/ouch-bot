@@ -27,7 +27,7 @@ function ServerInstance(id)
     this.disconnectTimers = 0;
     this.filepath = './Content/' + id + "/";
 
-    this.queueSound = (message, audioPath) => {
+    this.queueSound = function (message, audioPath) {
         this.playQueue.push({
             audioPath,
             message,
@@ -41,12 +41,12 @@ function ServerInstance(id)
         }
     };
 
-    this.startPlayback = () => {
+    this.startPlayback = function () {
         this.isActive = true;
         this.playNextAudio();
     };
 
-    this.playNextAudio = () => {
+    this.playNextAudio = function () {
         if (this.playQueue.length < 1)
         {
             console.log("Attempted to play next with none left -- this is a rare occurence and shouldn't really happen.");
@@ -98,6 +98,30 @@ function ServerInstance(id)
             message.reply("Unable to join your voice channel!");
         });
     };
+
+    this.getAudioFiles = function () {
+        return new Promise((resolve, reject) => {
+            glob(this.filepath + "*.*", (err, files) => {
+                if (err) reject(err);
+                else resolve(files);
+            });
+        });
+    };
+
+    this.fileExists = function (filename) {
+        return this.getAudioFiles()
+        .then((files) => {
+            if (files)
+            {
+                for (let i = 0; i < files.length; i++)
+                {
+                    if (path.basename(files[i]).split('.')[0] == filename) return Promise.resolve(files[i]);
+                }
+            }
+
+            return Promise.resolve(false);
+        });
+    }
 }
 
 var commands = [
@@ -143,17 +167,7 @@ function stopCurrent(message, serverInstance, args)
 
 function listClips(message, serverInstance, args)
 {
-    new Promise((resolve, reject) => {
-        glob(serverInstance.filepath + "*.*", (err, files) => {
-            if (err)
-            {
-                console.error("Glob failed: " + err);
-                message.reply("Unable to play the audio file (this is a bot problem).");
-                reject();
-            }
-            resolve(files);
-        });
-    })
+    serverInstance.getAudioFiles()
     .then((files) => {
         let list = "";
         if (files && files.length > 0)
@@ -182,31 +196,16 @@ function playAudio(message, serverInstance, args)
 
     var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
 
-    new Promise((resolve, reject) => {
-        glob(serverInstance.filepath + "*.*", (err, files) => {
-            if (err)
-            {
-                console.error("Glob failed: " + err);
-                message.reply("Unable to play the audio file (this is a bot problem).");
-                reject();
-            }
-            resolve(files);
-        });
-    })
-    .then((files) => {
-        if (files)
-        {
-            for (let i = 0; i < files.length; i++)
-            {
-                if (path.basename(files[i]).split('.')[0] == formattedName)
-                {
-                    serverInstance.queueSound(message, files[i]);
-                    return;
-                }
-            }
+    serverInstance.fileExists(formattedName)
+    .then((file) => {
+        if (!file) message.reply("Couldn't find an audio clip with the name '" + formattedName + "'!");
+        else {
+            serverInstance.queueSound(message, file);
         }
-
-        message.reply("Couldn't find an audio clip with the name '" + formattedName + "'!");
+    })
+    .catch((err) => {
+        console.error("Play audio failed: " + err);
+        message.reply("Unable to play the audio file (this is a bot problem).");
     });
 }
 
@@ -243,38 +242,23 @@ function removeContent(message, serverInstance, args)
 
     var formattedName = args[0].replace(/[^a-z0-9_\-]/gi, '').toLowerCase();
 
-    new Promise((resolve, reject) => {
-        glob(serverInstance.filepath + "*.*", (err, files) => {
-            if (err)
-            {
-                console.error("Glob failed: " + err);
-                message.reply("Unable to remove the audio file (this is a bot problem).");
-                reject();
-            }
-            resolve(files);
-        });
-    })
-    .then((files) => {
-        if (files)
-        {
-            for (let i = 0; i < files.length; i++)
-            {
-                if (path.basename(files[i]).split('.')[0] == formattedName)
+    serverInstance.fileExists(formattedName)
+    .then((file) => {
+        if (!file) message.reply("The audio clip specified does not exist!");
+        else {
+            fs.unlink(file, (err) => {
+                if (err)
                 {
-                    fs.unlink(files[i], (err) => {
-                        if (err)
-                        {
-                            console.error("Failed to delete audio file: " + err);
-                            message.reply("Unable to remove the audio file (this is a bot problem).");
-                        }
-                        message.reply("Successfully removed the audio clip '" + formattedName + "'.");
-                    });
-                    return;
+                    console.error("Failed to delete audio file: " + err);
+                    message.reply("Unable to remove the audio file (this is a bot problem).");
                 }
-            }
+                else message.reply("Successfully removed the audio clip '" + formattedName + "'.");
+            });
         }
-
-        message.reply("The audio clip specified does not exist!");
+    })
+    .catch((err) => {
+        console.error("Glob failed: " + err);
+        message.reply("Unable to remove the audio file (this is a bot problem).");
     });
 }
 
@@ -305,6 +289,7 @@ function addContent(message, serverInstance, args)
         return;
     }
 
+    // Ensure server content directory exists
     new Promise((resolve, reject) => {
         fs.mkdir(serverInstance.filepath, { recursive: true }, (err) => {
             if (err)
@@ -317,37 +302,25 @@ function addContent(message, serverInstance, args)
             resolve();
         });
     })
-    .then(() => {
-        return new Promise((resolve, reject) => {
-            glob(serverInstance.filepath + "*.*", (err, files) => {
-                if (err)
-                {
-                    console.error("Glob failed: " + err);
-                    message.reply("Unable to add the new audio file (this is a bot problem).");
-                    reject();
-                }
-                resolve(files);
-            });
-        });
-    })
-    .then((files) => {
-        if (files)
+    // Determine if file with filename already exists
+    .then(() => serverInstance.fileExists(formattedName))
+    .then((exists) => {
+        if (exists)
         {
-            for (let i = 0; i < files.length; i++)
-            {
-                if (path.basename(files[i]).split('.')[0] == formattedName)
-                {
-                    message.reply("This audio name has already been taken! Please change the name or remove the existing audio file using `!remove`");
-                    reject();
-                }
-            }
+            message.reply("This audio name has already been taken! Please change the name or remove the existing audio file using `!remove`");
+            return Promise.reject();
         }
-        
+
         return downloadAttachmentContent(message, serverInstance, formattedName);
+    }, (err) => {
+        console.error("Failed to get files from server instance: " + err);
+        message.reply("Unable to add the new audio file (this is a bot problem).");
     })
+    // Notify success
     .then(() => {
         message.reply("Audio file added successfully! Type `!ouch " + formattedName + "` to play it!");
-    });
+    })
+    .catch((err) => {});
 }
 
 function downloadAttachmentContent(message, serverInstance, formattedName)
