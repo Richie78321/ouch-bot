@@ -8,7 +8,9 @@
     "discord.js": "^11.4.2",
     "ffmpeg": "0.0.4",
     "ffmpeg-binaries": "^4.0.0",
+    "fluent-ffmpeg": "^2.1.2",
     "glob": "^7.1.6",
-    "node-opus": "^0.3.1"
+    "node-opus": "^0.3.1",
+    "youtube-mp3-downloader": "^0.6.7"
   }
 }

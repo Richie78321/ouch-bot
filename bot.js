@@ -4,6 +4,7 @@ var fs = require('fs');
 var glob = require('glob');
 var path = require('path');
 var http = require('https');
+var ytDownloader = require('youtube-mp3-downloader');
 
 const PLAY_DELAY = 250;
 const END_LEAVE_DELAY = 30000;
@@ -14,6 +15,8 @@ client.login(auth.token).catch((error) => {
     console.log("Bot failed to connect.");
     console.error(error);
 });
+
+const ytdl = new YouTubeDownloader();
 
 client.on('message', onMessage);
 
@@ -122,6 +125,56 @@ function ServerInstance(id)
             return Promise.resolve(false);
         });
     }
+}
+
+function YouTubeDownloader() {
+
+    this.outputPath = path.resolve("./youtube_temp");
+    
+    fs.mkdir(this.outputPath, { recursive: true }, (err) => {
+        if (err) throw new Error("Unable to initialize YouTube downloader temp directory: " + err);
+    });
+
+    this.downloader = new ytDownloader({
+        "ffmpegPath": path.resolve("./node_modules/ffmpeg-binaries/bin/ffmpeg.exe"),
+        "outputPath": this.outputPath,
+        "youtubeVideoQuality": "lowest",
+        "queueParallelism": 10,
+        "progressTimeout": 2000
+    });
+
+    this.downloadCallbacks = {}
+    this.removeCallback = (data) => {
+        var download_id = path.basename(data.file).split('.')[0];
+        var downloadCallback = this.downloadCallbacks[download_id];
+
+        if (!downloadCallback) throw new Error("Callbacks do not exist for download ID: " + download_id);
+        // Reset callback
+        this.downloadCallbacks[download_id] = null;
+        
+        return downloadCallback;
+    };
+
+    this.downloader.on("error", (err, data) => {
+        this.removeCallback(data).reject(err);
+    });
+
+    this.downloader.on("finished", (err, data) => {
+        if (err) this.removeCallback(data).reject(err);
+        this.removeCallback(data).resolve(data);
+    });
+
+    this.downloadAudio = (video_id, message_id) => {
+        console.log("Downloading YT video " + video_id + " from " + message_id);
+        return new Promise((resolve, reject) => {
+            this.downloadCallbacks[message_id] = {
+                resolve,
+                reject
+            };
+
+            this.downloader.download(video_id, message_id + ".mp3");
+        });
+    };
 }
 
 var commands = [
@@ -270,12 +323,6 @@ function youtube_parser(url){
 
 function addContent(message, serverInstance, args)
 {
-    if (message.attachments.array().length < 1)
-    {
-        message.reply("Please upload an audio file and include the add command with the attachment!");
-        return;
-    }
-
     if (args.length < 1)
     {
         message.reply("Please include a name for the audio file! (Example: !add test)");
@@ -287,6 +334,30 @@ function addContent(message, serverInstance, args)
     {
         message.reply("Please include a name for the audio file! (Example: !add test)");
         return;
+    }
+
+    var downloadContent = null;
+    if (args.length < 2)
+    {
+        // Treat as attachment
+        if (message.attachments.array().length < 1)
+        {
+            message.reply("Please upload an audio file and include the add command with the attachment (or supply a YouTube video link instead with `!add example <link>`)!");
+            return;
+        }
+
+        downloadContent = downloadFromAttachment(message, serverInstance, formattedName);
+    }
+    else
+    {
+        var video_id = youtube_parser(args[1]);
+        if (!video_id)
+        {
+            message.reply("Please supply a valid YouTube video link or upload an audio file as an attachment with `!add example` instead!");
+            return;
+        }
+
+        downloadContent = downloadFromYoutube(message, serverInstance, formattedName, video_id);
     }
 
     // Ensure server content directory exists
@@ -311,19 +382,37 @@ function addContent(message, serverInstance, args)
             return Promise.reject();
         }
 
-        return downloadAttachmentContent(message, serverInstance, formattedName);
+        return downloadContent;
     }, (err) => {
         console.error("Failed to get files from server instance: " + err);
         message.reply("Unable to add the new audio file (this is a bot problem).");
     })
-    // Notify success
-    .then(() => {
-        message.reply("Audio file added successfully! Type `!ouch " + formattedName + "` to play it!");
-    })
-    .catch((err) => {});
+    .catch((err) => {});    
 }
 
-function downloadAttachmentContent(message, serverInstance, formattedName)
+function downloadFromYoutube(message, serverInstance, formattedName, video_id)
+{
+    let filename = formattedName + ".mp3";
+    
+    message.reply("Working on it...");
+    ytdl.downloadAudio(video_id, message.id)
+    .then((data) => {
+        fs.rename(data.file, serverInstance.filepath + filename, (err) => {
+            if (err) return Promise.reject(err);
+            else return Promise.resolve();
+        })
+    })
+    .then(() => {
+        message.reply("Audio file added successfully! Type `!ouch " + formattedName + "` to play it!");
+        console.log("Added " + formattedName + " to " + message.member.guild);
+    })
+    .catch((err) => {
+        console.log(err);
+        message.reply("Unable to add the new audio file (this is a bot problem).");
+    });
+}
+
+function downloadFromAttachment(message, serverInstance, formattedName)
 {
     return new Promise((resolve, reject) => {
         http.get(message.attachments.array()[0].url, (response) => {
@@ -343,5 +432,9 @@ function downloadAttachmentContent(message, serverInstance, formattedName)
             response.pipe(audioFile);
             resolve();
         });
-    });
+    })
+    .then(() => {
+        message.reply("Audio file added successfully! Type `!ouch " + formattedName + "` to play it!");
+    })
+    .catch((err) => {});
 }
